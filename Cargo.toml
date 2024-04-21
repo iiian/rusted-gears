@@ -1,0 +1,17 @@
+[package]
+name = "rusted-gears"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+axum = "0.7.5"
+chrono = "0.4.38"
+dotenv = "0.15.0"
+futures = "0.3.30"
+priority-queue = "2.0.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.116"
+tokio = { version = "1.37.0", features = ["rt-multi-thread"] }
+tokio-postgres = { version = "0.7.10", features = ["with-serde_json-1", "with-chrono-0_4"] }
