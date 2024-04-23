@@ -7,7 +7,7 @@ use priority_queue::PriorityQueue;
 
 use std::{collections::HashMap, hash::Hash};
 
-use crate::job_service::JobService;
+use crate::job_service::RgJobService;
 
 pub mod timestamp;
 
@@ -117,7 +117,7 @@ impl RgCache {
         }
     }
 
-    pub fn clone_of_all(&self) -> Vec<RgJob> {
+    pub fn clone_all(&self) -> Vec<RgJob> {
         self.fail
             .values()
             .chain(self.inflight.values())
@@ -127,11 +127,11 @@ impl RgCache {
 }
 
 pub(crate) struct RgAppState {
-    pub(crate) job_service: RwLock<JobService>,
+    pub(crate) job_service: RwLock<RgJobService>,
 }
 
 impl RgAppState {
-    pub fn new(job_service: RwLock<JobService>) -> Self {
+    pub fn new(job_service: RwLock<RgJobService>) -> Self {
         Self { job_service }
     }
 }

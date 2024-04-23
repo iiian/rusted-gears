@@ -2,12 +2,24 @@ use tokio_postgres::Client;
 
 use crate::types::{RgCache, RgJob, RgMoveJob};
 
-pub(crate) struct JobService {
+pub(crate) struct RgJobService {
     pub(crate) client: Client,
     pub(crate) cache: RgCache,
 }
 
-impl JobService {
+impl Iterator for RgJobService {
+    type Item = RgJob;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some((rg_job, _)) = self.cache.pending.pop() {
+            Some(rg_job)
+        } else {
+            None
+        }
+    }
+}
+
+impl RgJobService {
     pub fn new(client: Client, cache: RgCache) -> Self {
         Self { client, cache }
     }
@@ -41,19 +53,18 @@ impl JobService {
             .map_err(|_| "Database insert failed")?;
 
         self.cache
-            .subcache_mut(&job.queue)
-            .insert(job.id(), job.clone());
-        self.cache.pending.push(job.clone(), job.priority);
-        println!("Job added to cache");
+            .subcache_mut(&new_job.queue)
+            .insert(new_job.id(), new_job.clone());
+        self.cache.pending.push(new_job.clone(), new_job.priority);
 
         Ok(new_job)
     }
 
     pub(crate) async fn get_jobs(&self) -> Vec<RgJob> {
-        self.cache.clone_of_all()
+        self.cache.clone_all()
     }
 
-    pub(crate) async fn move_job(&mut self, move_job: RgMoveJob) -> Result<RgJob, &'static str> {
+    pub(crate) async fn move_job(&mut self, move_job: RgMoveJob) -> Result<Vec<RgJob>, String> {
         if let Some(job) = self
             .cache
             .find_any(&move_job.clone().into())
@@ -63,7 +74,7 @@ impl JobService {
             let to_queue = move_job.to_queue;
             let new_job = self
                 .client
-                .query_one(
+                .query(
                     "
                     UPDATE job
                     SET queue = $1, in_progress = 'f'
@@ -73,14 +84,16 @@ impl JobService {
                     &[&to_queue, &job.namespace_id, &job.job_name],
                 )
                 .await
-                .map(|v| Into::<RgJob>::into(v))
-                .map_err(|_| "Database update failed")?;
+                .map(|v| v.into_iter().map(|e|Into::<RgJob>::into(e)).collect::<Vec<_>>())
+                .map_err(|err| format!("Database update failed: {}", err))?;
 
-            self.cache.subcache_mut(&from_queue).remove(&job.id());
+            let id = job.id();
+            self.cache.subcache_mut(&from_queue).remove(&id);
+            self.cache.subcache_mut(&to_queue).insert(id, job);
 
             Ok(new_job)
         } else {
-            return Err("Unknown job id");
+            return Err("Unknown job id".to_string());
         }
     }
 }

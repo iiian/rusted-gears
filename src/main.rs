@@ -1,5 +1,5 @@
 use dotenv::dotenv;
-use job_service::JobService;
+use job_service::RgJobService;
 use std::{error::Error, sync::Arc};
 use tokio::sync::RwLock;
 use types::RgJob;
@@ -20,9 +20,18 @@ mod job_service;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    dotenv()?;
-    let client = get_ensured_app_state().await?;
-    let app_state = init_cache(client).await?;
+    dotenv().expect("missing .env");
+    let client = get_ensured_db_client().await?;
+    let app_state = init_app_state(client).await?;
+    let app_state = Arc::new(app_state);
+    let worker_app_state = app_state.clone();
+    tokio::spawn(async move {
+        while let Some(rg_job) = worker_app_state.job_service.write().await.next() {
+            // todo: actually handle
+            rg_job.
+        }
+    });
+
     println!("rusted-gears listening on port :2024");
     axum::serve(
         tokio::net::TcpListener::bind("0.0.0.0:2024").await?,
@@ -30,14 +39,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .route("/create", post(routes::create_job_route))
             .route("/get", get(routes::get_jobs))
             .route("/move", put(routes::move_job))
-            .with_state(Arc::new(app_state)),
+            .with_state(app_state),
     )
     .await?;
 
     Ok(())
 }
 
-async fn get_ensured_app_state() -> Result<Client, Box<dyn Error>> {
+async fn get_ensured_db_client() -> Result<Client, Box<dyn Error>> {
     let conn_str = format!(
         "host={} user={} password='{}'",
         std::env::var("POSTGRES_HOST")?,
@@ -53,10 +62,10 @@ async fn get_ensured_app_state() -> Result<Client, Box<dyn Error>> {
     });
 
     // Check if the target database exists
-    let rows = client
+    let is_some_rg_table = client
         .query("SELECT 1 FROM pg_database WHERE datname='rg'", &[])
         .await?;
-    if rows.is_empty() {
+    if is_some_rg_table.is_empty() {
         // Create the database if it does not exist
         client.execute("CREATE DATABASE rg", &[]).await?;
     }
@@ -68,7 +77,7 @@ async fn get_ensured_app_state() -> Result<Client, Box<dyn Error>> {
         std::env::var("POSTGRES_PASS")?,
         "rg"
     );
-    // Connect to the default 'postgres' database for administrative tasks
+
     let (client, connection) = tokio_postgres::connect(&conn_str, NoTls).await?;
     tokio::spawn(async move {
         if let Err(e) = connection.await {
@@ -76,6 +85,7 @@ async fn get_ensured_app_state() -> Result<Client, Box<dyn Error>> {
         }
     });
 
+    // ensure tables & triggers
     client
         .batch_execute(
             "
@@ -94,7 +104,7 @@ async fn get_ensured_app_state() -> Result<Client, Box<dyn Error>> {
             CREATE OR REPLACE FUNCTION update_modified_column()
             RETURNS TRIGGER AS $$
             BEGIN
-                NEW.since = CURRENT_TIMESTAMP;
+                NEW.updated_at = CURRENT_TIMESTAMP;
                 RETURN NEW;
             END;
             $$ LANGUAGE plpgsql;
@@ -127,7 +137,7 @@ async fn get_ensured_app_state() -> Result<Client, Box<dyn Error>> {
     Ok(client)
 }
 
-async fn init_cache(client: Client) -> Result<RgAppState, Box<dyn Error>> {
+async fn init_app_state(client: Client) -> Result<RgAppState, Box<dyn Error>> {
     let results = client.query("SELECT * FROM job;", &[]).await?;
     let mut cache = RgCache::new();
     for row in results {
@@ -135,5 +145,5 @@ async fn init_cache(client: Client) -> Result<RgAppState, Box<dyn Error>> {
         cache.subcache_mut(&job.queue).insert(job.id(), job);
     }
 
-    Ok(RgAppState::new(RwLock::new(JobService::new(client, cache))))
+    Ok(RgAppState::new(RwLock::new(RgJobService::new(client, cache))))
 }
